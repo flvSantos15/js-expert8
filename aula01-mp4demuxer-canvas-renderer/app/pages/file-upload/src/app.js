@@ -3,18 +3,27 @@ import View from './view.js'
 
 const view = new View()
 const clock = new Clock()
+const worker = new Worker('./src/worker/worker.js', {
+  type: 'module'
+})
+
+worker.onmessage = ({ data }) => {
+  if (data.status !== 'done') return
+  clock.stop()
+  view.updateElapsedTime(`Process took ${took.replace('ago', '')}`)
+  console.log('recebi no processo da view', data)
+}
 
 let took = ''
 view.configureOnFileChange((file) => {
+  worker.postMessage({
+    file
+  })
+
   clock.start((time) => {
     took = time
     view.updateElapsedTime(`Process started ${time}`)
   })
-
-  setTimeout(() => {
-    clock.stop()
-    view.updateElapsedTime(`Process took ${took.replace('ago', '')}`)
-  }, 5000)
 })
 
 async function fakeFetch() {
@@ -36,4 +45,3 @@ async function fakeFetch() {
 }
 
 fakeFetch()
-// parei no 33:33 (criação do webworker)
