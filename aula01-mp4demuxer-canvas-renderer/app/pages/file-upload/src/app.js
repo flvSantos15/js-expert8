@@ -7,6 +7,10 @@ const worker = new Worker('./src/worker/worker.js', {
   type: 'module'
 })
 
+worker.onerror = (error) => {
+  console.error('error worker', error)
+}
+
 worker.onmessage = ({ data }) => {
   if (data.status !== 'done') return
   clock.stop()
@@ -16,9 +20,14 @@ worker.onmessage = ({ data }) => {
 
 let took = ''
 view.configureOnFileChange((file) => {
-  worker.postMessage({
-    file
-  })
+  const canvas = view.getCanvas()
+  worker.postMessage(
+    {
+      file,
+      canvas
+    },
+    [canvas]
+  )
 
   clock.start((time) => {
     took = time

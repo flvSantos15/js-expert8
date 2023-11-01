@@ -1,5 +1,6 @@
-import VideoProcessor from './videoProcessor.js'
+import CanvasRenderer from './canvasRenderer.js'
 import Mp4Demuxer from './mp4Demuxer.js'
+import VideoProcessor from './videoProcessor.js'
 
 const qvgaConstraints = {
   width: 320,
@@ -31,12 +32,16 @@ const encoderConfig = {
   // avc: { format: 'annexb' }
 }
 
-const videoProcessor = new VideoProcessor()
 const mp4Demuxer = new Mp4Demuxer()
+const videoProcessor = new VideoProcessor({
+  mp4Demuxer
+})
 
 onmessage = async ({ data }) => {
+  const renderFrame = CanvasRenderer.getRenderer(data.canvas)
   await videoProcessor.start({
     file: data.file,
+    renderFrame,
     encoderConfig,
     sendMessage(message) {
       self.postMessage(message)
@@ -47,4 +52,3 @@ onmessage = async ({ data }) => {
     status: 'done'
   })
 }
-// parei no 50:33

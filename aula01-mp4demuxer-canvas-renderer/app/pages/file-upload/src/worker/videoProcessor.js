@@ -8,20 +8,50 @@ export default class VideoProcessor {
   constructor({ mp4Demuxer }) {
     this.#mp4Demuxer = mp4Demuxer
   }
-  async mp4Decoder(enconderConfig, stream) {
-    this.#mp4Demuxer.run(stream, {
-      onConfig(config) {
-        debugger
-      },
-      onChunck(chuck) {
-        debugger
+
+  /** @returns {ReadableStream} */
+  mp4Decoder(enconderConfig, stream) {
+    return new ReadableStream({
+      start: async (controller) => {
+        const decoder = new VideoDecoder({
+          /** @param {VideFrame} frame */
+          output(frame) {
+            controller.enqueue(frame)
+          },
+          error(e) {
+            console.error('error at mp4Decoder', e)
+            controller.error(e)
+          }
+        })
+
+        return this.#mp4Demuxer
+          .run(stream, {
+            onConfig(config) {
+              decoder.configure(config)
+            },
+            /** @param {EncondedVideoChunk} chunk */
+            onChunk(chuck) {
+              decoder.decode(chuck)
+            }
+          })
+          .then(() => {
+            setTimeout(() => {
+              controller.close()
+            }, 3000)
+          })
       }
     })
   }
 
-  async start({ file, encoderConfig, message }) {
+  async start({ file, encoderConfig, renderFrame }) {
     const stream = file.stream()
-    const fileName = file.name.splti('/').pop().replace('.mp4', '')
-    await this.mp4Decoder(encoderConfig, stream)
+    const fileName = file.name.split('/').pop().replace('.mp4', '')
+    await this.mp4Decoder(encoderConfig, stream).pipeTo(
+      new WritableStream({
+        write(frame) {
+          renderFrame(frame)
+        }
+      })
+    )
   }
 }
