@@ -1,12 +1,19 @@
 export default class VideoProcessor {
   #mp4Demuxer
+  #webMWriter
+  #buffers = []
+  #service
   /**
    *
    *  @param {object} options
    *  @param {import('./mp4Demuxer.js').default} options.mp4Demuxer
+   *  @param {import('./../deps/webm-writer2.js').default} options.webMWriter
+   *  @param {import('./service.js').default} options.service
    */
-  constructor({ mp4Demuxer }) {
+  constructor({ mp4Demuxer, webMWriter, service }) {
     this.#mp4Demuxer = mp4Demuxer
+    this.#webMWriter = webMWriter
+    this.#service = service
   }
 
   /** @returns {ReadableStream} */
@@ -24,29 +31,20 @@ export default class VideoProcessor {
           }
         })
 
-        return this.#mp4Demuxer
-          .run(stream, {
-            async onConfig(config) {
-              const { supported } = await VideoDecoder.isConfigSupported(config)
-
-              if (!supported) {
-                console.error('mp3Muxer VideoDecoder config not supported!')
-                controller.close()
-                return
-              }
-
-              decoder.configure(config)
-            },
-            /** @param {EncondedVideoChunk} chunk */
-            onChunk(chuck) {
-              decoder.decode(chuck)
-            }
-          })
-          .then(() => {
-            setTimeout(() => {
-              controller.close()
-            }, 3000)
-          })
+        return this.#mp4Demuxer.run(stream, {
+          async onConfig(config) {
+            decoder.configure(config)
+          },
+          /** @param {EncodedVideoChunk} chunk */
+          onChunk(chunk) {
+            decoder.decode(chunk)
+          }
+        })
+        // .then(() => {
+        //   setTimeout(() => {
+        //     controller.close()
+        //   }, 3000)
+        // })
       }
     })
   }
@@ -67,8 +65,19 @@ export default class VideoProcessor {
         }
 
         _encoder = new VideoEncoder({
+          /**
+           *
+           * @param {EncodedVideoChunk} frame
+           * @param {EncodedVideoChunkMetadata} config
+           */
           output: (frame, config) => {
-            debugger
+            if (config.decoderConfig) {
+              const decoderConfig = {
+                type: 'config',
+                config: config.decoderConfig
+              }
+              controller.enqueue(decoderConfig)
+            }
             controller.enqueue(frame)
           },
           error: (err) => {
@@ -94,18 +103,115 @@ export default class VideoProcessor {
     }
   }
 
-  async start({ file, encoderConfig, renderFrame }) {
+  renderDecodedFranesAndGetEncondedChunk(renderFrame) {
+    let _decoder
+    return new TransformStream({
+      start: (controller) => {
+        _decoder = new VideoDecoder({
+          output(frame) {
+            renderFrame(frame)
+          },
+          error(e) {
+            console.error('error at renderFrames', e)
+            controller.error(e)
+          }
+        })
+      },
+      /**
+       *
+       * @param {EncodedVideoChunk} encodedChunk
+       * @param {TransformStreamDefaultController} controller
+       */
+      async transform(encodedChunk, controller) {
+        if (encodedChunk.type === 'config') {
+          await _decoder.configure(encodedChunk.config)
+          return
+        }
+
+        _decoder.decode(encodedChunk)
+
+        //  need the eoncded version to use webM
+        controller.enqueue(encodedChunk)
+      }
+    })
+  }
+
+  transformIntoWebM() {
+    const writable = new WritableStream({
+      write: (chunk) => {
+        this.#webMWriter.addFrame(chunk)
+      },
+      close() {
+        debugger
+      }
+    })
+    return {
+      readable: this.#webMWriter.getStream(),
+      writable
+    }
+  }
+
+  upload(filename, resolution, type) {
+    const chunks = []
+    let byteCount = 0
+    let segmentCount = 0
+    const triggerUpload = async (chunks) => {
+      const blob = new Blob(chunks, { type: 'video/webm' })
+
+      //  fazer upload
+      await this.#service.uploadFile({
+        filename: `${filename}-${resolution}.${++segmentCount}.${type}`,
+        fileBuffer: blob
+      })
+
+      // remover todos os elementos
+      chunks.length = 0
+      byteCount = 0
+    }
+    return new WritableStream({
+      /**
+       * @param {object} options
+       * @param {Uin8Array} options.data
+       */
+      async write({ data }) {
+        chunks.push(data)
+        byteCount += data.byteLength
+        // se for menor que 10mb não faz upload
+        if (byteCount <= 10e6) return
+        await triggerUpload(chunks)
+        // renderFrame(frame)
+      },
+      async close() {
+        if (!chunks.length) return
+        await triggerUpload(chunks)
+      }
+    })
+  }
+
+  async start({ file, encoderConfig, renderFrame, sendMessage }) {
     const stream = file.stream()
     const fileName = file.name.split('/').pop().replace('.mp4', '')
     await this.mp4Decoder(stream)
       .pipeThrough(this.enconde144p(encoderConfig))
-      .pipeTo(
-        new WritableStream({
-          write(frame) {
-            // renderFrame(frame)
-          }
-        })
-      )
+      .pipeThrough(this.renderDecodedFranesAndGetEncondedChunk(renderFrame))
+      .pipeThrough(this.transformIntoWebM())
+      // .pipeThrough(
+      //   new TransformStream({
+      //     transform: ({ data, position }, controller) => {
+      //       this.#buffers.push(data)
+      //       controller.enqueue(data)
+      //     },
+      //     flush: () => {
+      //       sendMessage({
+      //         status: 'done',
+      //         buffers: this.#buffers,
+      //         filename: fileName.concat('-144p.webm')
+      //       })
+      //     }
+      //   })
+      // )
+      .pipeTo(this.upload(fileName, '144p', 'webm'))
+    sendMessage({ status: 'done' })
   }
 }
 
